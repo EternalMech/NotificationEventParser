@@ -7,18 +7,13 @@ WORKDIR /usr/backend
 # Set up Python behaviour
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
-ENV VIRTUAL_ENV=/opt/venv
-
-# Switch on virtual environment
-RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Set the server port
 EXPOSE 8000
 
 # Install system dependencies
 RUN apt-get update \
-  && apt-get -y install netcat gcc postgresql \
+  && apt-get -y install netcat-openbsd gcc \
   && apt-get clean
 
 # Install Python dependencies
@@ -28,13 +23,17 @@ RUN pip3 install -r requirements.txt
 
 # Copy all files
 COPY . .
+ENV PYTHONPATH=/usr/backend
+RUN sed -i 's/\r$//' /usr/backend/entrypoint.sh
+RUN chmod +x /usr/backend/entrypoint.sh
 
 # Copy entrypoint.sh for auto connection with account_db service
-COPY ./entrypoint.sh .
-RUN chmod +x /usr/backend/entrypoint.sh
 
 # Execute entrypoint.sh
 ENTRYPOINT ["/usr/backend/entrypoint.sh" ]
 
 # Start up the backend server
-CMD uvicorn src.main:backend_app --reload --workers 4 --host 0.0.0.0 --port 8000
+CMD ["uvicorn", "src.main:backend_app", "--reload", "--workers", "4", "--host", "0.0.0.0", "--port", "8000"]
+
+COPY ./scripts /scripts
+RUN chmod +x /scripts/entrypoint_project.sh /scripts/entrypoint_alembic.sh /scripts/entrypoint_alembic_revision.sh

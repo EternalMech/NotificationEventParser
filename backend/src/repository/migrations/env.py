@@ -6,12 +6,28 @@ from sqlalchemy import engine_from_config
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import NullPool as SQLAlchemyNullPool
+from sqlalchemy import create_engine
 
-from src.repository.base import Base
-from src.repository.database import async_db
+from repository.table import Base
+from models.db.event import Event
 
+from dotenv import load_dotenv
+import os
+import sys
+# Удалены все print и sys.path.append для чистоты
+load_dotenv()
+
+from alembic import context
 config = context.config
-config.set_main_option(name="sqlalchemy.url", value=str(async_db.set_async_db_uri))
+# db_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+# if "?" in db_url:
+#     db_url += "&client_encoding=utf8"
+# else:
+#     db_url += "?client_encoding=utf8"
+# config.set_main_option("sqlalchemy.url", db_url)
+# print("DATABASE_URL (for alembic):", db_url)
+# print("alembic.ini sqlalchemy.url:", config.get_main_option("sqlalchemy.url"))
+
 target_metadata = Base.metadata
 
 if config.config_file_name is not None:
@@ -31,6 +47,8 @@ def run_migrations_offline() -> None:
 
     """
     url = config.get_main_option("sqlalchemy.url")
+    if url is None:
+        raise RuntimeError("No sqlalchemy.url found in config")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -49,29 +67,30 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-async def run_migrations_online() -> None:
+def run_migrations_online() -> None:
     """Run migrations in 'online' mode.
 
     In this scenario we need to create an Engine
     and associate a connection with the context.
 
     """
-    connectable = AsyncEngine(
-        engine_from_config(
-            config.get_section(config.config_ini_section),  # type: ignore
-            prefix="sqlalchemy.",
-            poolclass=SQLAlchemyNullPool,
-            future=True,
-        )
+    url = config.get_main_option("sqlalchemy.url")
+    if url is None:
+        raise RuntimeError("No sqlalchemy.url found in config")
+    connectable = create_engine(
+        url,
+        poolclass=SQLAlchemyNullPool,
+        future=True,
     )
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+    with connectable.connect() as connection:
+        context.configure(connection=connection, target_metadata=target_metadata)
 
-    await connectable.dispose()
+        with context.begin_transaction():
+            context.run_migrations()
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    asyncio.run(run_migrations_online())
+    run_migrations_online()
