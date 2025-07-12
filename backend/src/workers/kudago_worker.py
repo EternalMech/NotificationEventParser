@@ -2,8 +2,9 @@ import asyncio
 import httpx
 from datetime import datetime
 import json
+import re
 from src.repository.database import get_async_session
-from src.models.db.event import Event
+from src.models.db.event import Event, KudagoEvent
 from sqlalchemy import select
 import asyncpg
 import sqlalchemy.exc
@@ -18,6 +19,28 @@ KUDAGO_API_URL = (
     "&page={page}&page_size=100"
 )
 
+def clean_html_tags(text):
+    """Очищает текст от HTML тегов"""
+    if not text:
+        return ""
+    
+    clean_text = re.sub(r'<a[^>]*>.*?</a>', '', text, flags=re.DOTALL)
+    clean_text = re.sub(r'<[^>]*>', '', clean_text)
+    clean_text = re.sub(r'\s+', ' ', clean_text)
+    return clean_text.strip()
+
+def format_event_name(title, description):
+    """Форматирует название и описание в стиле Telegram"""
+    if not description:
+        return f"*{title}*"
+    
+    # Очищаем описание от HTML тегов
+    clean_description = clean_html_tags(description)
+    
+    # Ограничиваем описание до 1500 символов (оставляем место для названия и форматирования)
+    desc = clean_description[:1500] + "..." if len(clean_description) > 1500 else clean_description
+    return f"*{title}*\n\n{desc}"
+
 def parse_event(item):
     def get_first(lst, key):
         return lst[0][key] if lst and key in lst[0] else None
@@ -27,40 +50,35 @@ def parse_event(item):
         starts_at = datetime.fromtimestamp(item["dates"][0]["start"])
         if starts_at.tzinfo is not None:
             starts_at = starts_at.replace(tzinfo=None)
-    publication_date = None
-    if item.get("publication_date"):
-        publication_date = datetime.fromtimestamp(item["publication_date"])
-        if publication_date.tzinfo is not None:
-            publication_date = publication_date.replace(tzinfo=None)
-    place = (item.get("place") or {}).get("address")
-    location = (item.get("location") or {}).get("slug") if item.get("location") else None
-    categories = ",".join(item.get("categories", [])) if item.get("categories") else None
-    tags = ",".join(item.get("tags", [])) if item.get("tags") else None
-    images = json.dumps(item.get("images")) if item.get("images") else None
-    participants = json.dumps(item.get("participants")) if item.get("participants") else None
+    
+    place = (item.get("place") or {}).get("address", "Адрес не указан")
+    categories = ",".join(item.get("categories", [])) if item.get("categories") else "Категория не указана"
+    
+    name = format_event_name(
+        item.get("title", "Без названия"),
+        item.get("description", "")
+    )
+    
+    # Получаем первое изображение для фото
+    photo = None
+    if item.get("images"):
+        try:
+            images_data = item["images"] if isinstance(item["images"], list) else json.loads(item["images"])
+            if images_data and len(images_data) > 0:
+                photo = images_data[0].get("image", "")
+        except (json.JSONDecodeError, IndexError, KeyError):
+            pass
+    
     return {
-        "kudago_id": item.get("id"),
-        "publication_date": publication_date,
+        "name": name,
+        "interests": categories,
         "starts_at": starts_at,
-        "title": item.get("title", ""),
-        "short_title": item.get("short_title"),
-        "slug": item.get("slug"),
-        "place": place,
-        "description": item.get("description"),
-        "body_text": item.get("body_text"),
-        "location": location,
-        "categories": categories,
-        "tagline": item.get("tagline"),
-        "age_restriction": str(item.get("age_restriction")) if item.get("age_restriction") is not None else None,
-        "price": str(item.get("price")) if item.get("price") is not None else None,
-        "is_free": item.get("is_free"),
-        "images": images,
-        "favorites_count": item.get("favorites_count"),
-        "comments_count": item.get("comments_count"),
-        "site_url": item.get("site_url"),
-        "tags": tags,
-        "participants": participants,
+        "address": place,
+        "creator_id": 0, 
         "created_at": datetime.now().replace(microsecond=0),
+        "join_type": None,  # Пока не реализовано
+        "join_link": None,  # Пока не реализовано
+        "photo": photo,
     }
 
 async def fetch_events_for_period(since, until):
@@ -79,7 +97,7 @@ async def fetch_events_for_period(since, until):
             except Exception as e:
                 logging.error(f"Ошибка при запросе {url}: {e}")
                 break
-        page_events = data.get("results", []) if 'data' in locals() else []
+        page_events = data.get("results", []) if 'data' in locals() and data else []
         if not page_events:
             break
         events.extend(page_events)
@@ -95,19 +113,34 @@ async def save_events(events):
     try:
         async for session in get_async_session():
             for item in events:
-                event_data = parse_event(item)
-                if not event_data["kudago_id"]:
+                kudago_id = item.get("id")
+                if not kudago_id:
                     continue
-                if not event_data["starts_at"] or event_data["starts_at"] < datetime.now():
-                    continue
+                
+                # Проверяем, не обрабатывали ли мы уже это событие
                 exists = await session.execute(
-                    select(Event).where(Event.kudago_id == event_data["kudago_id"])
+                    select(KudagoEvent).where(KudagoEvent.kudago_id == kudago_id)
                 )
                 if exists.scalars().first():
                     continue
+                
+                event_data = parse_event(item)
+                if not event_data["starts_at"] or event_data["starts_at"] < datetime.now():
+                    continue
+                
+                # Создаем запись в основной таблице
                 event = Event(**event_data)
                 session.add(event)
+                
+                # Создаем запись в таблице отслеживания
+                kudago_event = KudagoEvent(
+                    kudago_id=kudago_id,
+                    processed_at=datetime.now().replace(microsecond=0)
+                )
+                session.add(kudago_event)
+                
                 added_count += 1
+            
             await session.commit()
     except (asyncpg.exceptions.PostgresError, sqlalchemy.exc.DBAPIError, Exception) as e:
         logging.error(f"Ошибка при работе с БД: {e}")

@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import NullPool as SQLAlchemyNullPool
 from sqlalchemy import create_engine
 
-from repository.table import Base
-from models.db.event import Event
+from src.repository.table import Base
+from src.models.db.event import Event, KudagoEvent
 
 from dotenv import load_dotenv
 import os

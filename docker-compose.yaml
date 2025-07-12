@@ -1,4 +1,4 @@
-version: "3.9"
+# Docker Compose version removed as it's obsolete
 
 services:
   postgres:
@@ -13,6 +13,24 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: ./backend
+    container_name: api
+    entrypoint: ["/scripts/entrypoint_project.sh", "python", "src/api_server.py"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PYTHONPATH: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
 
   kudago_worker:
     build:
@@ -61,6 +79,8 @@ services:
       PYTHONPATH: .
     depends_on:
       - postgres
+    volumes:
+      - ./backend/src/repository/migrations:/usr/backend/src/repository/migrations
 
 volumes:
   postgres_data:
